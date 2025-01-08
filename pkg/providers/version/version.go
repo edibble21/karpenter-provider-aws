@@ -92,6 +92,18 @@ func (p *DefaultProvider) UpdateVersion(ctx context.Context) error {
 	}
 	return nil
 }
+func (p *DefaultProvider) UpdateVersionWithValidation(ctx context.Context) error {
+	p.UpdateVersion(ctx)
+	var versionSource string
+	version := p.version.Load()
+	if p.cm.HasChanged("kubernetes-version", version) || p.cm.HasChanged("version-source", versionSource) {
+		log.FromContext(ctx).WithValues("version", version).V(1).Info("discovered kubernetes version")
+		if err := validateK8sVersion(lo.FromPtr(version)); err != nil {
+			return fmt.Errorf("validating kubernetes version, %w", err)
+		}
+	}
+	return nil
+}
 
 // SupportedK8sVersions returns a slice of version strings in format "major.minor" for all versions of k8s supported by
 // this version of Karpenter.
