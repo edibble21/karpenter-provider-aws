@@ -170,3 +170,15 @@ func ToReasonMessage(err error) (string, string) {
 	}
 	return "LaunchFailed", "Instance launch failed"
 }
+
+func IsUnauthorizedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		return strings.Contains(apiErr.ErrorCode(), "UnauthorizedOperation")
+	}
+	return strings.Contains(err.Error(), "UnauthorizedOperation")
+
+}
