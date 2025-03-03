@@ -26,6 +26,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 
 	v1 "github.com/aws/karpenter-provider-aws/pkg/apis/v1"
+	sdk "github.com/aws/karpenter-provider-aws/pkg/aws"
 	nodeclass "github.com/aws/karpenter-provider-aws/pkg/controllers/nodeclass"
 	nodeclasshash "github.com/aws/karpenter-provider-aws/pkg/controllers/nodeclass/hash"
 	controllersinstancetype "github.com/aws/karpenter-provider-aws/pkg/controllers/providers/instancetype"
@@ -33,6 +34,7 @@ import (
 	controllerspricing "github.com/aws/karpenter-provider-aws/pkg/controllers/providers/pricing"
 	ssminvalidation "github.com/aws/karpenter-provider-aws/pkg/controllers/providers/ssm/invalidation"
 	controllersversion "github.com/aws/karpenter-provider-aws/pkg/controllers/providers/version"
+	capacityreservationprovider "github.com/aws/karpenter-provider-aws/pkg/providers/capacityreservation"
 	"github.com/aws/karpenter-provider-aws/pkg/providers/launchtemplate"
 	"github.com/aws/karpenter-provider-aws/pkg/providers/version"
 
@@ -45,6 +47,7 @@ import (
 
 	awscache "github.com/aws/karpenter-provider-aws/pkg/cache"
 	"github.com/aws/karpenter-provider-aws/pkg/controllers/interruption"
+	"github.com/aws/karpenter-provider-aws/pkg/controllers/nodeclaim/capacityreservation"
 	nodeclaimgarbagecollection "github.com/aws/karpenter-provider-aws/pkg/controllers/nodeclaim/garbagecollection"
 	nodeclaimtagging "github.com/aws/karpenter-provider-aws/pkg/controllers/nodeclaim/tagging"
 	"github.com/aws/karpenter-provider-aws/pkg/operator/options"
@@ -63,10 +66,12 @@ func NewControllers(
 	mgr manager.Manager,
 	cfg aws.Config,
 	clk clock.Clock,
+	ec2api sdk.EC2API,
 	kubeClient client.Client,
 	recorder events.Recorder,
 	unavailableOfferings *awscache.UnavailableOfferings,
 	ssmCache *cache.Cache,
+	validationCache *cache.Cache,
 	cloudProvider cloudprovider.CloudProvider,
 	subnetProvider subnet.Provider,
 	securityGroupProvider securitygroup.Provider,
@@ -76,10 +81,12 @@ func NewControllers(
 	amiProvider amifamily.Provider,
 	launchTemplateProvider launchtemplate.Provider,
 	versionProvider *version.DefaultProvider,
-	instanceTypeProvider *instancetype.DefaultProvider) []controller.Controller {
+	instanceTypeProvider *instancetype.DefaultProvider,
+	capacityReservationProvider capacityreservationprovider.Provider,
+) []controller.Controller {
 	controllers := []controller.Controller{
 		nodeclasshash.NewController(kubeClient),
-		nodeclass.NewController(kubeClient, recorder, subnetProvider, securityGroupProvider, amiProvider, instanceProfileProvider, launchTemplateProvider),
+		nodeclass.NewController(ctx, clk, kubeClient, recorder, subnetProvider, securityGroupProvider, amiProvider, instanceProfileProvider, launchTemplateProvider, capacityReservationProvider, ec2api, validationCache),
 		nodeclaimgarbagecollection.NewController(kubeClient, cloudProvider),
 		nodeclaimtagging.NewController(kubeClient, cloudProvider, instanceProvider),
 		controllerspricing.NewController(pricingProvider),
@@ -88,6 +95,7 @@ func NewControllers(
 		ssminvalidation.NewController(ssmCache, amiProvider),
 		status.NewController[*v1.EC2NodeClass](kubeClient, mgr.GetEventRecorderFor("karpenter"), status.EmitDeprecatedMetrics),
 		controllersversion.NewController(versionProvider, versionProvider.UpdateVersionWithValidation),
+		capacityreservation.NewController(kubeClient, cloudProvider),
 	}
 	if options.FromContext(ctx).InterruptionQueue != "" {
 		sqsapi := servicesqs.NewFromConfig(cfg)

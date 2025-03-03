@@ -17,8 +17,9 @@ HELM_OPTS ?= --set serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn=${K
 			--set controller.resources.requests.memory=1Gi \
 			--set controller.resources.limits.cpu=1 \
 			--set controller.resources.limits.memory=1Gi \
-			--set settings.featureGates.spotToSpotConsolidation=true \
 			--set settings.featureGates.nodeRepair=true \
+			--set settings.featureGates.reservedCapacity=true \
+			--set settings.featureGates.spotToSpotConsolidation=true \
 			--create-namespace
 
 # CR for local builds of Karpenter
@@ -33,6 +34,11 @@ KARPENTER_CORE_DIR = $(shell go list -m -f '{{ .Dir }}' sigs.k8s.io/karpenter)
 
 # TEST_SUITE enables you to select a specific test suite directory to run "make e2etests" against
 TEST_SUITE ?= "..."
+TMPFILE = $(shell mktemp) 
+
+# Filename when building the binary controller only
+GOARCH ?= $(shell go env GOARCH)
+BINARY_FILENAME = karpenter-provider-aws-$(GOARCH)
 
 help: ## Display help
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
@@ -84,6 +90,20 @@ e2etests: ## Run the e2e suite against your local cluster
 		--ginkgo.grace-period=3m \
 		--ginkgo.vv
 
+upstream-e2etests: 
+	CLUSTER_NAME=${CLUSTER_NAME} envsubst < $(shell pwd)/test/pkg/environment/aws/default_ec2nodeclass.yaml > ${TMPFILE}
+	go test \
+		-count 1 \
+		-timeout 1h \
+		-v \
+		$(KARPENTER_CORE_DIR)/test/suites/$(shell echo $(TEST_SUITE) | tr A-Z a-z)/... \
+		--ginkgo.focus="${FOCUS}" \
+		--ginkgo.timeout=1h \
+		--ginkgo.grace-period=5m \
+		--ginkgo.vv \
+		--default-nodeclass="$(TMPFILE)"\
+		--default-nodepool="$(shell pwd)/test/pkg/environment/aws/default_nodepool.yaml"
+
 e2etests-deflake: ## Run the e2e suite against your local cluster
 	cd test && CLUSTER_NAME=${CLUSTER_NAME} ginkgo \
 		--focus="${FOCUS}" \
@@ -131,6 +151,9 @@ image: ## Build the Karpenter controller images using ko build
 	$(eval IMG_REPOSITORY=$(shell echo $(CONTROLLER_IMG) | cut -d "@" -f 1 | cut -d ":" -f 1))
 	$(eval IMG_TAG=$(shell echo $(CONTROLLER_IMG) | cut -d "@" -f 1 | cut -d ":" -f 2 -s))
 	$(eval IMG_DIGEST=$(shell echo $(CONTROLLER_IMG) | cut -d "@" -f 2))
+
+binary: ## Build the Karpenter controller binary using go build
+	go build $(GOFLAGS) -o $(BINARY_FILENAME) ./cmd/controller/...
 
 apply: verify image ## Deploy the controller from the current state of your git repository into your ~/.kube/config cluster
 	kubectl apply -f ./pkg/apis/crds/

@@ -46,6 +46,7 @@ import (
 
 	cloudproviderevents "github.com/aws/karpenter-provider-aws/pkg/cloudprovider/events"
 	"github.com/aws/karpenter-provider-aws/pkg/providers/amifamily"
+	"github.com/aws/karpenter-provider-aws/pkg/providers/capacityreservation"
 	"github.com/aws/karpenter-provider-aws/pkg/providers/instance"
 	"github.com/aws/karpenter-provider-aws/pkg/providers/instancetype"
 	"github.com/aws/karpenter-provider-aws/pkg/providers/securitygroup"
@@ -59,21 +60,30 @@ type CloudProvider struct {
 	kubeClient client.Client
 	recorder   events.Recorder
 
-	instanceTypeProvider  instancetype.Provider
-	instanceProvider      instance.Provider
-	amiProvider           amifamily.Provider
-	securityGroupProvider securitygroup.Provider
+	instanceTypeProvider        instancetype.Provider
+	instanceProvider            instance.Provider
+	amiProvider                 amifamily.Provider
+	securityGroupProvider       securitygroup.Provider
+	capacityReservationProvider capacityreservation.Provider
 }
 
-func New(instanceTypeProvider instancetype.Provider, instanceProvider instance.Provider, recorder events.Recorder,
-	kubeClient client.Client, amiProvider amifamily.Provider, securityGroupProvider securitygroup.Provider) *CloudProvider {
+func New(
+	instanceTypeProvider instancetype.Provider,
+	instanceProvider instance.Provider,
+	recorder events.Recorder,
+	kubeClient client.Client,
+	amiProvider amifamily.Provider,
+	securityGroupProvider securitygroup.Provider,
+	capacityReservationProvider capacityreservation.Provider,
+) *CloudProvider {
 	return &CloudProvider{
-		instanceTypeProvider:  instanceTypeProvider,
-		instanceProvider:      instanceProvider,
-		kubeClient:            kubeClient,
-		amiProvider:           amiProvider,
-		securityGroupProvider: securityGroupProvider,
-		recorder:              recorder,
+		instanceTypeProvider:        instanceTypeProvider,
+		instanceProvider:            instanceProvider,
+		kubeClient:                  kubeClient,
+		amiProvider:                 amiProvider,
+		securityGroupProvider:       securityGroupProvider,
+		capacityReservationProvider: capacityReservationProvider,
+		recorder:                    recorder,
 	}
 }
 
@@ -103,13 +113,16 @@ func (c *CloudProvider) Create(ctx context.Context, nodeClaim *karpv1.NodeClaim)
 	if len(instanceTypes) == 0 {
 		return nil, cloudprovider.NewInsufficientCapacityError(fmt.Errorf("all requested instance types were unavailable during launch"))
 	}
-	tags, err := getTags(ctx, nodeClass, nodeClaim)
+	tags, err := utils.GetTags(nodeClass, nodeClaim, options.FromContext(ctx).ClusterName)
 	if err != nil {
 		return nil, cloudprovider.NewNodeClassNotReadyError(err)
 	}
 	instance, err := c.instanceProvider.Create(ctx, nodeClass, nodeClaim, tags, instanceTypes)
 	if err != nil {
 		return nil, fmt.Errorf("creating instance, %w", err)
+	}
+	if instance.CapacityType == karpv1.CapacityTypeReserved {
+		c.capacityReservationProvider.MarkLaunched(instance.CapacityReservationID)
 	}
 	instanceType, _ := lo.Find(instanceTypes, func(i *cloudprovider.InstanceType) bool {
 		return i.Name == string(instance.Type)
@@ -189,7 +202,11 @@ func (c *CloudProvider) Delete(ctx context.Context, nodeClaim *karpv1.NodeClaim)
 		return fmt.Errorf("getting instance ID, %w", err)
 	}
 	ctx = log.IntoContext(ctx, log.FromContext(ctx).WithValues("id", id))
-	return c.instanceProvider.Delete(ctx, id)
+	err = c.instanceProvider.Delete(ctx, id)
+	if id := nodeClaim.Labels[cloudprovider.ReservationIDLabel]; id != "" && cloudprovider.IsNodeClaimNotFoundError(err) {
+		c.capacityReservationProvider.MarkTerminated(id)
+	}
+	return err
 }
 
 func (c *CloudProvider) DisruptionReasons() []karpv1.DisruptionReason {
@@ -230,26 +247,6 @@ func (c *CloudProvider) Name() string {
 
 func (c *CloudProvider) GetSupportedNodeClasses() []status.Object {
 	return []status.Object{&v1.EC2NodeClass{}}
-}
-
-func getTags(ctx context.Context, nodeClass *v1.EC2NodeClass, nodeClaim *karpv1.NodeClaim) (map[string]string, error) {
-	if offendingTag, found := lo.FindKeyBy(nodeClass.Spec.Tags, func(k string, v string) bool {
-		for _, exp := range v1.RestrictedTagPatterns {
-			if exp.MatchString(k) {
-				return true
-			}
-		}
-		return false
-	}); found {
-		return nil, fmt.Errorf("%q tag does not pass tag validation requirements", offendingTag)
-	}
-	staticTags := map[string]string{
-		fmt.Sprintf("kubernetes.io/cluster/%s", options.FromContext(ctx).ClusterName): "owned",
-		karpv1.NodePoolLabelKey: nodeClaim.Labels[karpv1.NodePoolLabelKey],
-		v1.EKSClusterNameTagKey: options.FromContext(ctx).ClusterName,
-		v1.LabelNodeClass:       nodeClass.Name,
-	}
-	return lo.Assign(nodeClass.Spec.Tags, staticTags), nil
 }
 
 func (c *CloudProvider) RepairPolicies() []cloudprovider.RepairPolicy {
@@ -419,6 +416,9 @@ func (c *CloudProvider) instanceToNodeClaim(i *instance.Instance, instanceType *
 		}
 	}
 	labels[karpv1.CapacityTypeLabelKey] = i.CapacityType
+	if i.CapacityType == karpv1.CapacityTypeReserved {
+		labels[cloudprovider.ReservationIDLabel] = i.CapacityReservationID
+	}
 	if v, ok := i.Tags[karpv1.NodePoolLabelKey]; ok {
 		labels[karpv1.NodePoolLabelKey] = v
 	}
