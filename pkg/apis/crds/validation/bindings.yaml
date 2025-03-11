@@ -1,0 +1,59 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: ec2nodeclass-validation-binding
+spec:
+  policyName: ec2nodeclass-validation
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector: {}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: ec2nodeclass-update-validation-binding
+spec:
+  policyName: ec2nodeclass-update-validation
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector: {}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: nodeclaim-validation-binding
+spec:
+  policyName: nodeclaim-validation
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector: {}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: nodeclaim-update-validation-binding
+spec:
+  policyName: nodeclaim-update-validation
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector: {}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: nodepool-validation-binding
+spec:
+  policyName: nodepool-validation
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector: {}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: nodepool-update-validation-binding
+spec:
+  policyName: nodepool-update-validation
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector: {}

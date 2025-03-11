@@ -1,0 +1,218 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: ec2nodeclass-validation
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: ["karpenter.k8s.aws"]
+      apiVersions: ["v1"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["ec2nodeclasses"]
+  validations:
+    # AMI Selector validations
+    - expression: |
+        !has(object.spec.amiSelectorTerms) ||
+        object.spec.amiSelectorTerms.all(x,
+          !has(x.tags) ||
+          x.tags.all(k, k != '' && x.tags[k] != '')
+        )
+      message: "empty tag keys or values aren't supported"
+
+    - expression: |
+        object.spec.amiSelectorTerms.all(x,
+          has(x.tags) || has(x.id) || has(x.name) || has(x.alias)
+        )
+      message: "expected at least one, got none, ['tags', 'id', 'name', 'alias']"
+
+    - expression: |
+        !object.spec.amiSelectorTerms.exists(x,
+          has(x.id) && (has(x.alias) || has(x.tags) || has(x.name) || has(x.owner))
+        )
+      message: "'id' is mutually exclusive, cannot be set with a combination of other fields in amiSelectorTerms"
+
+    - expression: |
+        !object.spec.amiSelectorTerms.exists(x,
+          has(x.alias) && (has(x.id) || has(x.tags) || has(x.name) || has(x.owner))
+        )
+      message: "'alias' is mutually exclusive, cannot be set with a combination of other fields in amiSelectorTerms"
+
+    - expression: |
+        !(object.spec.amiSelectorTerms.exists(x, has(x.alias)) && 
+          object.spec.amiSelectorTerms.size() != 1)
+      message: "'alias' is mutually exclusive, cannot be set with a combination of other amiSelectorTerms"
+
+    # Block Device Mappings validations
+    - expression: |
+        !has(object.spec.blockDeviceMappings) ||
+        object.spec.blockDeviceMappings.filter(x,
+          has(x.rootVolume) ? x.rootVolume == true : false
+        ).size() <= 1
+      message: "must have only one blockDeviceMappings with rootVolume"
+
+    - expression: |
+        !has(object.spec.blockDeviceMappings) ||
+        object.spec.blockDeviceMappings.all(x,
+          !has(x.ebs) ||
+          has(x.ebs.snapshotID) || has(x.ebs.volumeSize)
+        )
+      message: "snapshotID or volumeSize must be defined"
+
+    # Capacity Reservation validations
+    - expression: |
+        !has(object.spec.capacityReservationSelectorTerms) ||
+        object.spec.capacityReservationSelectorTerms.all(x,
+          !has(x.tags) ||
+          x.tags.all(k, k != '' && x.tags[k] != '')
+        )
+      message: "empty tag keys or values aren't supported"
+
+    - expression: |
+        !has(object.spec.capacityReservationSelectorTerms) ||
+        object.spec.capacityReservationSelectorTerms.all(x,
+          has(x.tags) || has(x.id)
+        )
+      message: "expected at least one, got none, ['tags', 'id']"
+
+    - expression: |
+        !has(object.spec.capacityReservationSelectorTerms) ||
+        !object.spec.capacityReservationSelectorTerms.exists(x,
+          has(x.id) && (has(x.tags) || has(x.ownerID))
+        )
+      message: "'id' is mutually exclusive, cannot be set along with tags in a capacity reservation selector term"
+
+    # Security Group validations
+    - expression: "has(object.spec.securityGroupSelectorTerms) && object.spec.securityGroupSelectorTerms.size() != 0"
+      message: "securityGroupSelectorTerms cannot be empty"
+
+    - expression: |
+        object.spec.securityGroupSelectorTerms.all(x,
+          has(x.tags) || has(x.id) || has(x.name)
+        )
+      message: "expected at least one, got none, ['tags', 'id', 'name']"
+
+    - expression: |
+        !object.spec.securityGroupSelectorTerms.exists(x,
+          has(x.id) && (has(x.tags) || has(x.name))
+        )
+      message: "'id' is mutually exclusive, cannot be set with a combination of other fields in a security group selector term"
+
+    - expression: |
+        !object.spec.securityGroupSelectorTerms.exists(x,
+          has(x.name) && (has(x.tags) || has(x.id))
+        )
+      message: "'name' is mutually exclusive, cannot be set with a combination of other fields in a security group selector term"
+
+    # Subnet validations
+    - expression: "has(object.spec.subnetSelectorTerms) && object.spec.subnetSelectorTerms.size() != 0"
+      message: "subnetSelectorTerms cannot be empty"
+
+    - expression: |
+        object.spec.subnetSelectorTerms.all(x,
+          has(x.tags) || has(x.id)
+        )
+      message: "expected at least one, got none, ['tags', 'id']"
+
+    - expression: |
+        !object.spec.subnetSelectorTerms.exists(x,
+          has(x.id) && has(x.tags)
+        )
+      message: "'id' is mutually exclusive, cannot be set with a combination of other fields in a subnet selector term"
+
+    # Role/InstanceProfile validations
+    - expression: "(has(object.spec.role) && !has(object.spec.instanceProfile)) || (!has(object.spec.role) && has(object.spec.instanceProfile))"
+      message: "must specify exactly one of ['role', 'instanceProfile']"
+
+    - expression: "!has(object.spec.instanceProfile) || object.spec.instanceProfile != ''"
+      message: "instanceProfile cannot be empty"
+
+    - expression: "!has(object.spec.role) || object.spec.role != ''"
+      message: "role cannot be empty"
+
+    # AMI Family validations
+    - expression: |
+        !has(object.spec.amiFamily) ||
+        (object.spec.amiSelectorTerms.exists(x, has(x.alias) && x.alias.find('^[^@]+') == 'al2') ?
+        (object.spec.amiFamily == 'Custom' || object.spec.amiFamily == 'AL2') : true)
+      message: "if set, amiFamily must be 'AL2' or 'Custom' when using an AL2 alias"
+
+    - expression: |
+        !has(object.spec.amiFamily) ||
+        (object.spec.amiSelectorTerms.exists(x, has(x.alias) && x.alias.find('^[^@]+') == 'al2023') ?
+        (object.spec.amiFamily == 'Custom' || object.spec.amiFamily == 'AL2023') : true)
+      message: "if set, amiFamily must be 'AL2023' or 'Custom' when using an AL2023 alias"
+
+    - expression: |
+        !has(object.spec.amiFamily) ||
+        (object.spec.amiSelectorTerms.exists(x, has(x.alias) && x.alias.find('^[^@]+') == 'bottlerocket') ?
+        (object.spec.amiFamily == 'Custom' || object.spec.amiFamily == 'Bottlerocket') : true)
+      message: "if set, amiFamily must be 'Bottlerocket' or 'Custom' when using a Bottlerocket alias"
+
+    - expression: |
+        !has(object.spec.amiFamily) ||
+        (object.spec.amiSelectorTerms.exists(x, has(x.alias) && x.alias.find('^[^@]+') == 'windows2019') ?
+        (object.spec.amiFamily == 'Custom' || object.spec.amiFamily == 'Windows2019') : true)
+      message: "if set, amiFamily must be 'Windows2019' or 'Custom' when using a Windows2019 alias"
+
+    - expression: |
+        !has(object.spec.amiFamily) ||
+        (object.spec.amiSelectorTerms.exists(x, has(x.alias) && x.alias.find('^[^@]+') == 'windows2022') ?
+        (object.spec.amiFamily == 'Custom' || object.spec.amiFamily == 'Windows2022') : true)
+      message: "if set, amiFamily must be 'Windows2022' or 'Custom' when using a Windows2022 alias"
+
+    - expression: "object.spec.amiSelectorTerms.exists(x, has(x.alias)) ? true : has(object.spec.amiFamily)"
+      message: "must specify amiFamily if amiSelectorTerms does not contain an alias"
+
+    # Tags validations
+    - expression: |
+        !has(object.spec.tags) ||
+        object.spec.tags.all(k, k != '')
+      message: "empty tag keys aren't supported"
+
+    - expression: |
+        !has(object.spec.tags) ||
+        object.spec.tags.all(k, k != 'eks:eks-cluster-name')
+      message: "tag contains a restricted tag matching eks:eks-cluster-name"
+
+    - expression: |
+        !has(object.spec.tags) ||
+        object.spec.tags.all(k, !k.startsWith('kubernetes.io/cluster'))
+      message: "tag contains a restricted tag matching kubernetes.io/cluster/"
+
+    - expression: |
+        !has(object.spec.tags) ||
+        object.spec.tags.all(k, k != 'karpenter.sh/nodepool')
+      message: "tag contains a restricted tag matching karpenter.sh/nodepool"
+
+    - expression: |
+        !has(object.spec.tags) ||
+        object.spec.tags.all(k, k != 'karpenter.sh/nodeclaim')
+      message: "tag contains a restricted tag matching karpenter.sh/nodeclaim"
+
+    - expression: |
+        !has(object.spec.tags) ||
+        object.spec.tags.all(k, k != 'karpenter.k8s.aws/ec2nodeclass')
+      message: "tag contains a restricted tag matching karpenter.k8s.aws/ec2nodeclass"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: ec2nodeclass-update-validation
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: ["karpenter.k8s.aws"]
+      apiVersions: ["v1"]
+      operations: ["UPDATE"]
+      resources: ["ec2nodeclasses"]
+  validations:
+    # Role/InstanceProfile immutability validations
+    - expression: |
+        (has(oldObject.spec.role) && has(object.spec.role)) ||
+        (has(oldObject.spec.instanceProfile) && has(object.spec.instanceProfile))
+      message: "changing from 'instanceProfile' to 'role' is not supported. You must delete and recreate this node class if you want to change this."
+
+    - expression: "object.spec.role == oldObject.spec.role"
+      message: "immutable field changed"
